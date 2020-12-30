@@ -1,136 +1,122 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
-	"github.com/jinzhu/gorm"
-	_ "github.com/jinzhu/gorm/dialects/mysql"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/gorilla/mux"
 )
 
-type User struct {
-	Id   int    `gorm:" AUTO_INCREMENT "` // increment
-	Name string `gorm:" size: 255 "`      // string default length is 255, the use of this tag Reset
-	Age  int
+type Post struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
-var (
-	db  *gorm.DB
-	err error
-)
+var db *sql.DB
+var err error
 
 func main() {
-	// link mysql
-	db, err = gorm.Open("mysql", "root:rajsekhar@tcp(127.0.0.1:3306)/rajsekhar?charset=utf8&parseTime=True&loc=Local")
+	db, err = sql.Open("mysql", "root:rajsekhar@tcp(127.0.0.1:3306)/rajsekhar")
 	if err != nil {
-		panic(err)
-	} else {
-
-		db.SingularTable(true) // If set to true, `User` default table named` user`, use `TableName` set the table name will not be affected
-
-		// generally do not directly create a table with CreateTable
-		// Check the model `User` table exists, otherwise User` create a table for the model`
-		if !db.HasTable(&User{}) {
-			if err := db.Set("gorm:table_options", "ENGINE=InnoDB").AutoMigrate(&User{}).Error; err != nil {
-				panic(err)
-			}
+		panic(err.Error())
+	}
+	defer db.Close()
+	router := mux.NewRouter()
+	router.HandleFunc("/posts", getPosts).Methods("GET")
+	router.HandleFunc("/posts", createPost).Methods("POST")
+	router.HandleFunc("/posts/{id}", getPost).Methods("GET")
+	router.HandleFunc("/posts/{id}", updatePost).Methods("PUT")
+	router.HandleFunc("/posts/{id}", deletePost).Methods("DELETE")
+	http.ListenAndServe(":8000", router)
+}
+func getPosts(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var posts []Post
+	result, err := db.Query("SELECT id, title from posts")
+	if err != nil {
+		panic(err.Error())
+	}
+	defer result.Close()
+	for result.Next() {
+		var post Post
+		err := result.Scan(&post.ID, &post.Title)
+		if err != nil {
+			panic(err.Error())
+		}
+		posts = append(posts, post)
+	}
+	json.NewEncoder(w).Encode(posts)
+}
+func createPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	stmt, err := db.Prepare("INSERT INTO posts(title) VALUES(?)")
+	if err != nil {
+		panic(err.Error())
+	}
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		panic(err.Error())
+	}
+	keyVal := make(map[string]string)
+	json.Unmarshal(body, &keyVal)
+	title := keyVal["title"]
+	_, err = stmt.Exec(title)
+	if err != nil {
+		panic(err.Error())
+	}
+	fmt.Fprintf(w, "New post was created")
+}
+func getPost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	params := mux.Vars(r)
+	result, err := db.Query("SELECT id, title FROM posts WHERE id = ?", params["id"])
+	if err != nil {
+		panic(err.Error())
+	}
+	defer result.Close()
+	var post Post
+	for result.Next() {
+		err := result.Scan(&post.ID, &post.Title)
+		if err != nil {
+			panic(err.Error())
 		}
 	}
-
-	// import routes
-	Router()
+	json.NewEncoder(w).Encode(post)
 }
-
-func Router() {
-	router := gin.Default()
-	// path mapping
-	router.GET("/user", InitPage)
-	router.POST("/user/create", CreateUser)
-	router.GET("/user/list", ListUser)
-	router.PUT("/user/update/:id", UpdateUser)
-	router.GET("/user/find/:id", GetUser)
-	router.DELETE("/user/:id", DeleteUser)
-
-	router.Run(":8080")
-}
-
-// Each routing function corresponds to a specific operation, enabling user to add, delete, change, operation
-func InitPage(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"message": "OK!",
-	})
-}
-
-// Create user
-// curl -i -X POST -H "Content-Type: application/json" -d "{ \"name\": \"Vic\", \"age\": 20}" http://localhost:8080/user/create
-func CreateUser(c *gin.Context) {
-	var user User
-	c.BindJSON(&user) // padding data using bindJson
-
-	// db.Create (& user) // Create Object
-	// c.JSON (http.StatusOK, & user) // returns the page
-	if user.Name != "" && user.Age > 0 {
-		db.Create(&user)
-		c.JSON(http.StatusOK, gin.H{"success": &user})
-	} else {
-		c.JSON(422, gin.H{"error": "Fields are empty"})
-	}
-}
-
-// update user
-//  http://localhost:8080/user/update/9
-func UpdateUser(c *gin.Context) {
-	var user User
-	id := c.Params.ByName("id")
-	err := db.First(&user, id).Error
+func updatePost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	params := mux.Vars(r)
+	stmt, err := db.Prepare("UPDATE posts SET title = ? WHERE id = ?")
 	if err != nil {
-		c.AbortWithStatus(404)
-		fmt.Println(err.Error())
-	} else {
-		c.BindJSON(&user)
-		db.Save(&user)               // commit the changes
-		c.JSON(http.StatusOK, &user) // returns the page
+		panic(err.Error())
 	}
-}
-
-// list all users
-// http://127.0.0.1:8080/user/list
-// curl -i http://localhost:8080/user/list
-func ListUser(c *gin.Context) {
-	var user []User
-	db.Find(&user)
-	c.JSON(http.StatusOK, &user) // find the limit line before the line
-}
-
-// list the single user
-// curl -i http://localhost:8080/user/find/18
-func GetUser(c *gin.Context) {
-	var user User
-	id := c.Params.ByName("id")
-	err := db.First(&user, id).Error
+	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		c.AbortWithStatus(404)
-		fmt.Println(err.Error())
-	} else {
-		c.JSON(http.StatusOK, &user)
+		panic(err.Error())
 	}
+	keyVal := make(map[string]string)
+	json.Unmarshal(body, &keyVal)
+	newTitle := keyVal["title"]
+	_, err = stmt.Exec(newTitle, params["id"])
+	if err != nil {
+		panic(err.Error())
+	}
+	fmt.Fprintf(w, "Post with ID = %s was updated", params["id"])
 }
-
-// delete users
-// curl -i -X DELETE http://localhost:8080/user/1
-func DeleteUser(c *gin.Context) {
-	var user User
-	id := c.Params.ByName("id")
-	db.First(&user, id)
-	if user.Id != 0 {
-		db.Delete(&user)
-		c.JSON(http.StatusOK, gin.H{
-			"success": "User# " + id + " deleted!",
-		})
-	} else {
-		c.JSON(404, gin.H{
-			"error": "User not found",
-		})
+func deletePost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	params := mux.Vars(r)
+	stmt, err := db.Prepare("DELETE FROM posts WHERE id = ?")
+	if err != nil {
+		panic(err.Error())
 	}
+	_, err = stmt.Exec(params["id"])
+	if err != nil {
+		panic(err.Error())
+	}
+	fmt.Fprintf(w, "Post with ID = %s was deleted", params["id"])
 }
